@@ -1,0 +1,1353 @@
+//+------------------------------------------------------------------+
+//|                            XAU_Titan_Pro_v11_03.mq5               |
+//|    ╔═══════════════════════════════════════════════════════╗      |
+//|    ║       XAU TITAN PRO - VERSION 11.03                   ║      |
+//|    ║          Copyright 2025 - Khamhak                     ║      |
+//|    ╚═══════════════════════════════════════════════════════╝      |
+//+------------------------------------------------------------------+
+#property copyright "XAU Titan Pro v11.03 - Khamhak"
+#property version   "11.03"
+#property strict
+#include <Trade\Trade.mqh>
+
+//+------------------------------------------------------------------+
+//| INPUT PARAMETERS                                                  |
+//+------------------------------------------------------------------+
+
+input group "══════ 1. CAPITAL CONTROL ══════"
+input double InpStartingBalance   = 2500.0;    // ทุนเริ่มต้น (ใช้คำนวณ ProfitStop + PANIC)
+input double InpStartLot          = 0.02;      // Lot ต่อไม้
+input double InpProfitStop        = 99999.0;      // หยุดเทรดเมื่อกำไร $X
+input double InpEmergency_Pct     = 60.0;      // Emergency % ของ Balance ปัจจุบัน
+
+input group "══════ 2. TIME GUARD ══════"
+input bool   InpAutoDetectDST     = true;      // Auto เลือก GMT ตามฤดู   US DST: 8 มี.ค. → GMT+0  |  EU DST: 29 มี.ค. → GMT+1
+input int    InpBrokerGMT_Winter  = 0;         // GMT ฤดูหนาว (พ.ย. - ก.พ.)
+input int    InpBrokerGMT_Summer  = 1;         // GMT ฤดูร้อน (มี.ค. - ต.ค.)
+input int    InpBrokerGMT         = 0;         // GMT แบบ manual (ถ้าปิด AutoDST)
+input int    InpNoTradeStartThai  = 3;         // ห้ามเปิด Sniper ตั้งแต่กี่โมง (ไทย)
+input int    InpNoTradeEndThai    = 6;         // ห้ามเปิด Sniper ถึงกี่โมง (ไทย)
+
+input group "══════ 3. WEEKEND GUARD ══════"
+input bool   InpUseWeekendGuard   = true;      // เปิดใช้ Weekend Guard
+input int    InpFridayStopThai    = 13;        // ศุกร์ → ปิด Sniper (Recovery ยังทำงาน)
+input int    InpFridayWarnBeforeMin = 30; 		//	 ศุกร์ → เตือนก่อนปิดกี่นาที (เช่น 20,30)
+input bool   InpFridayCloseAll    = false;      // ★ ศุกร์ CloseAll บังคับ (true=ปิดทุกไม้ / false=ค้างได้)
+input int    InpFridayCloseThai   = 21;        // ศุกร์ → เวลา CloseAll (ถ้าเปิดใช้)
+input int    InpMondayStartThai   = 8;         // จันทร์ → เปิด Sniper (รอตลาดนิ่งก่อน)
+input bool   InpAllowFridayRecovery = true;    // Recovery ทำงานหลัง Friday Stop
+
+input group "══════ 4. SNIPER ENGINE ══════"
+input int    InpH1_Trend_EMA      = 100;       // EMA period H1
+input int    InpRSI_Period        = 14;        // RSI period
+input int    InpRSI_Low           = 40;        // RSI ≤ นี้ → BUY     Default: 35  --> Safe
+input int    InpRSI_High          = 60;        // RSI ≥ นี้ → SELL   Default: 65   --> Safe
+input int    InpMaxSpread         = 50;        // Spread สูงสุด (points)
+input int    InpSniperCooldownSec = 30;        // Cooldown หลัง Sniper (วินาที)
+input int    InpMaxSniperPerSignal = 3;        // สัญญาณเดียวยิงได้กี่ไม้
+// TP + Trailing
+input double InpSniperTP          = 2.0;     // TP 1 ไม้ ($)  (No Trailing)
+input bool   InpUseTrailTP        = true;    // Trailing TP (Sniper 1 ไม้)
+input double InpTrailStart        = 2.0;     // เริ่ม Trail เมื่อกำไร $
+input double InpTrailStep         = 0.5;     // SL ห่างจาก peak $
+
+input group "══════ 5. MULTI-TF RSI ══════"
+input bool   InpUseMTF            = true;      // Multi-TF RSI ยืนยัน
+input int    InpRSI_M15_Low       = 40;        // RSI M15 ≤ นี้ → ยืนยัน BUY
+input int    InpRSI_M15_High      = 60;        // RSI M15 ≥ นี้ → ยืนยัน SELL
+input int    InpRSI_H1_Low        = 45;        // RSI H1 ≤ นี้ → ยืนยัน BUY
+input int    InpRSI_H1_High       = 55;        // RSI H1 ≥ นี้ → ยืนยัน SELL
+
+input group "══════ 6. BB SNIPER ══════"
+input bool   InpUseBB             = true;      // Bollinger Bands เสริม
+input int    InpBB_Period         = 20;        // BB period
+input double InpBB_Dev            = 2.0;       // BB deviation
+input ENUM_TIMEFRAMES InpBB_TF    = PERIOD_M5; // BB timeframe
+
+input group "══════ 7. SMART RECOVERY ENGINE ══════"
+input bool   InpUseDynDistance    = true;      // Dynamic Distance ตาม ATR
+input int    InpDistance          = 250;       // Distance พื้นฐาน (points)
+input double InpDynDist_ATR_Multi = 1.5;       // ATR × นี้ = Distance
+input int    InpRecoveryCooldownSec = 10;        // Cooldown หลัง Recovery 1 ไม้ (วินาที)
+input int    InpDynDist_Min       = 250;       // Distance ต่ำสุด		Default: 250  --> Safe
+input int    InpDynDist_Max       = 350;       // Distance สูงสุด		Default: 350  --> Safe
+input int    InpRecoveryRSI_Buy_Min  = 35;     // Recovery BUY อนุญาตเมื่อ RSI > ค่านี้  		Default: 40  --> Safe
+input int    InpRecoveryRSI_Sell_Max = 65;     // Recovery SELL อนุญาตเมื่อ RSI < ค่านี้		Default: 60  --> Safe
+input ENUM_TIMEFRAMES InpDynDist_TF = PERIOD_M15; // ATR timeframe
+input int    InpMaxOrders         = 10;         // ไม้สูงสุด        Maxorder Default: 8  --> Safe
+input double InpRecoveryTP        = 1.0;       // TP Grid ($)
+input bool   InpUseDynTP          = true;      // Dynamic TP ตาม Distance
+input bool   InpUseRecoveryBaseConfirm = true;   // Recovery ต้องรอฐานก่อนเข้า	Default: true --> Safe
+input int    InpOrderBaseConfirm       = 1;      // ใช้กับกี่ไม้แรก
+input int InpRecoveryConfirmWindowBars = 2;   // หลังถึง distance ให้รอสัญญาณได้กี่แท่ง
+
+
+input group "══════ 8. BREAKOUT AVOIDANCE ══════"
+input bool   InpUseATR_Shield     = true;      // ATR H4 หลีกเลี่ยง Breakout
+input int    InpATR_H4_Period     = 14;        // ATR period
+input int    InpATR_H4_AvgBars    = 200;       // จำนวนแท่งเฉลี่ย
+input double InpATR_H4_Multi      = 2.5;       // ATR > avg × นี้ → Block   Default: 1.5 --> Safe
+input bool   InpAvoidLondon       = false;     // หลีกเลี่ยง London Open
+input int    InpLondon_Open_Thai  = 14;        // London Open เวลาไทย
+input int    InpLondon_Duration   = 1;         // หลีกเลี่ยงกี่ชั่วโมง
+input bool   InpAvoidNY           = true;      // หลีกเลี่ยง NY Open
+input int    InpNY_Open_Thai      = 20;        // NY Open เวลาไทย
+input int    InpNY_Open_Duration  = 1;         // หลีกเลี่ยงกี่ชั่วโมง
+
+input group "══════ 9. TIER EXIT + PAIR CLOSE ══════"
+// Tier1 Exit — ≥ N ไม้ ยอมเสีย $X เพื่อปิดเร็ว
+input int    InpTier1_Trigger     = 5;         // Tier1: ไม้ถึงนี้ → ยอมเสีย	Default: 4  --> Safe
+input double InpTier1_Exit        = -10.0;      // Tier1: ยอมเสียสูงสุด ($)
+// Tier2 Exit — ≥ N ไม้ ยอมเสียมากขึ้น เพื่อหนี Emergency
+input int    InpTier2_Trigger     = 6;         // Tier2: ไม้ถึงนี้ → ยอมเสียเพิ่ม
+input double InpTier2_Exit        = -15.0;     // Tier2: ยอมเสียสูงสุด ($)
+// Heavy Grid STICKY
+input int    InpHeavyGrid_Trigger = 4;         // จำนวนไม้เข้า Heavy Grid
+input double InpHeavyGrid_ExitUSD = 0.5;       // Heavy Grid TP ($) — STICKY
+// Pair Close
+input bool   InpUsePairClose      = true;      // Pair Close
+input double InpPairClose_TargetUSD = 0.2;     // Pair Close เป้าหมาย ($)
+
+input group "══════ 10. NOTIFICATION ══════"
+input int    InpMagicNumber       = 103000;    // Magic Number
+input bool   InpEnableNotify      = true;      // Push Notification
+input int    InpNotifyHoldHours   = 2;         // แจ้งเตือนค้างนานกี่ชม.
+input int    InpGridWarnOrders    = 5;         // แจ้งเตือนเมื่อ Grid ถึงกี่ไม้
+input int    InpEmergencyWarnPct  = 20;        // แจ้งเตือนเมื่อ Equity เหลือกี่ % ก่อนถึง Emergency
+// Gap Alert — แจ้งเตือนเมื่อไม้ห่างกันมาก
+input bool   InpUseGapAlert        = true;     // แจ้งเตือน Gap ระหว่างไม้
+input int    InpGapAlertPoints     = 400;      // ห่างกี่ points ถึงแจ้งเตือน
+
+//+------------------------------------------------------------------+
+//| GLOBAL VARIABLES                                                   |
+//+------------------------------------------------------------------+
+
+CTrade trade_ctrl;
+
+// --- Indicator handles ---
+int hRSI=INVALID_HANDLE, hRSI_M15=INVALID_HANDLE, hRSI_H1=INVALID_HANDLE;
+int hEMA_H1=INVALID_HANDLE, hBB=INVALID_HANDLE, hATR_H4=INVALID_HANDLE, hATR_Dist=INVALID_HANDLE;
+
+// --- Weekend / Hold alerts ---
+int    last_hold_alert_hour = -1;
+bool   friday_stop_notified = false;
+bool   friday_warn_notified = false;
+bool   friday_close_done = false;
+
+// --- Cooldown ---
+datetime sniper_cooldown_until = 0;
+bool     sniper_locked = false;
+datetime last_trade_time = 0;        // ★ FIX: เวลาที่ยิงล่าสุด
+
+// --- Emergency ---
+double   emergency_level = 0;
+bool     emergency_close_pending = false;      // v10.27: รอปิดเมื่อตลาดเปิด
+double   panic_balance = 0;                    // v10.29: จำ Balance ตอนพัง
+
+// --- Grid mode ---
+bool     is_in_heavy_grid_mode = false;
+
+// --- Statistics ---
+int    total_sniper_rsi      = 0;
+int    total_sniper_bb       = 0;
+int    total_blocked_mtf     = 0;
+int    total_blocked_atr     = 0;
+int    total_blocked_session = 0;
+int    total_blocked_notime  = 0;
+int    total_blocked_spread  = 0;
+// ★★★ v11.01 DETAILED STATS ★★★
+int    st_sniper_win         = 0;              // Sniper ปิดกำไร (1 ไม้)
+double st_sniper_win_usd     = 0;              // $ สะสม Sniper wins
+int    st_recovery_win       = 0;              // Recovery ปิดกำไร (≥2 ไม้)
+double st_recovery_win_usd   = 0;              // $ สะสม Recovery wins
+double st_tier1_usd          = 0;              // $ สะสม Tier1 exits
+double st_tier2_usd          = 0;              // $ สะสม Tier2 exits
+double st_panic_usd          = 0;              // $ สะสม Panic closes
+int    total_emergency_hits  = 0;
+int    total_tier1_exits     = 0;
+int    total_tier2_exits     = 0;
+int    total_pair_closes     = 0;
+int    gap_alerted_at_orders = 0;
+int    signal_fire_count     = 0;
+bool   signal_was_active     = false;
+// --- Trailing TP ---
+double trail_peak_profit = 0;
+bool   trail_active = false;
+// --- Equity/Emergency Warning ---
+int    grid_warn_at_orders = 0;       // จำว่าเตือน Grid แล้วที่กี่ไม้
+bool   emergency_warn_sent = false;   // เตือน Equity ใกล้ Emergency แล้ว
+bool     recovery_dist_armed = false;
+datetime recovery_dist_bar_time = 0;
+
+
+// --- State machine ---
+enum ENUM_EA_STATE {
+    STATE_NORMAL,              // ปกติ — Sniper + Recovery ทำงาน
+    STATE_GOAL_REACHED,        // ถึงเป้ากำไร — หยุดทุกอย่าง
+    STATE_PANIC,               // Emergency — หยุดถาวร รอเติมเงิน/กดปุ่ม
+    STATE_FRIDAY_COOLDOWN,     // ศุกร์ 13:00 — Sniper ปิด / Recovery ยังทำงาน
+    STATE_WEEKEND_STOP         // ศุกร์ 21:00+ → หยุดทุกอย่าง
+};
+ENUM_EA_STATE current_state = STATE_NORMAL;
+bool sniper_valve = true;
+
+//+------------------------------------------------------------------+
+//| INITIALIZATION                                                     |
+//+------------------------------------------------------------------+
+int OnInit() {
+	
+	// --- Input Validation ---
+	if(InpBrokerGMT_Winter < -12 || InpBrokerGMT_Winter > 14 ||
+	   InpBrokerGMT_Summer < -12 || InpBrokerGMT_Summer > 14 ||
+	   InpBrokerGMT < -12 || InpBrokerGMT > 14) {
+		Print("❌ Broker GMT ต้องอยู่ในช่วง -12 ถึง +14");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+	if(InpStartingBalance <= 0) { Print("❌ StartingBalance > 0"); return(INIT_PARAMETERS_INCORRECT); }
+	if(InpStartLot <= 0)        { Print("❌ StartLot > 0");        return(INIT_PARAMETERS_INCORRECT); }
+	if(InpEmergency_Pct <= 0 || InpEmergency_Pct >= 100) { Print("❌ Emergency% 1-99"); return(INIT_PARAMETERS_INCORRECT); }
+	if(InpDistance <= 0)        { Print("❌ Distance > 0");        return(INIT_PARAMETERS_INCORRECT); }
+	if(InpMaxOrders < 1)        { Print("❌ MaxOrders >= 1");      return(INIT_PARAMETERS_INCORRECT); }
+	if(InpTier1_Trigger < 2)    { Print("❌ Tier1 Trigger >= 2");  return(INIT_PARAMETERS_INCORRECT); }
+
+	if(InpTrailStart <= 0) {
+		Print("❌ TrailStart > 0");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+
+	if(InpTrailStep <= 0) {
+		Print("❌ TrailStep > 0");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+
+	if(InpFridayWarnBeforeMin < 1 || InpFridayWarnBeforeMin > 180) {
+		Print("❌ FridayWarnBeforeMin ต้องอยู่ในช่วง 1-180 นาที");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+
+	if(InpFridayStopThai < 0 || InpFridayStopThai > 23 ||
+	   InpFridayCloseThai < 0 || InpFridayCloseThai > 23 ||
+	   InpMondayStartThai < 0 || InpMondayStartThai > 23) {
+		Print("❌ Hour inputs ต้องอยู่ในช่วง 0-23");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+
+	if(InpFridayStopThai >= InpFridayCloseThai) {
+		Print("❌ FridayStopThai ต้องน้อยกว่า FridayCloseThai");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+
+	if(InpFridayWarnBeforeMin > (InpFridayCloseThai - InpFridayStopThai) * 60) {
+		Print("❌ FridayWarnBeforeMin มากเกินช่วงระหว่าง FridayStopThai และ FridayCloseThai");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+	
+	if(InpEmergencyWarnPct < 1 || InpEmergencyWarnPct > 100) {
+		Print("❌ EmergencyWarnPct ต้องอยู่ในช่วง 1-100");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+
+	if(InpGridWarnOrders < 1 || InpGridWarnOrders > InpMaxOrders) {
+		Print("❌ GridWarnOrders ต้องอยู่ในช่วง 1-MaxOrders");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+
+	if(InpNotifyHoldHours < 0 || InpNotifyHoldHours > 168) {
+		Print("❌ NotifyHoldHours ต้องอยู่ในช่วง 0-168");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+
+	if(InpMaxSniperPerSignal < 1 || InpMaxSniperPerSignal > 20) {
+		Print("❌ MaxSniperPerSignal ต้องอยู่ในช่วง 1-20");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+
+	if(InpRecoveryRSI_Buy_Min < 0 || InpRecoveryRSI_Buy_Min > 100 ||
+	   InpRecoveryRSI_Sell_Max < 0 || InpRecoveryRSI_Sell_Max > 100) {
+		Print("❌ Recovery RSI ต้องอยู่ในช่วง 0-100");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+	
+	if(InpHeavyGrid_Trigger < 1 || InpHeavyGrid_Trigger > InpMaxOrders) {
+		Print("❌ HeavyGrid Trigger ต้องอยู่ในช่วง 1-MaxOrders");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+	
+	if(InpTier2_Trigger <= InpTier1_Trigger) {
+		Print("❌ Tier2 Trigger ต้องมากกว่า Tier1 Trigger");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+
+	if(InpOrderBaseConfirm < 0 || InpOrderBaseConfirm > InpMaxOrders) {
+		Print("❌ OrderBaseConfirm ต้องอยู่ในช่วง 0-MaxOrders");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+
+	if(InpRecoveryConfirmWindowBars < 1 || InpRecoveryConfirmWindowBars > 10) {
+		Print("❌ RecoveryConfirmWindowBars ต้องอยู่ในช่วง 1-10");
+		return(INIT_PARAMETERS_INCORRECT);
+	}
+
+
+
+    // --- Indicators ---
+    hRSI     = iRSI(_Symbol, _Period, InpRSI_Period, PRICE_CLOSE);
+    hRSI_M15 = iRSI(_Symbol, PERIOD_M15, InpRSI_Period, PRICE_CLOSE);
+    hRSI_H1  = iRSI(_Symbol, PERIOD_H1, InpRSI_Period, PRICE_CLOSE);
+    hEMA_H1  = iMA(_Symbol, PERIOD_H1, InpH1_Trend_EMA, 0, MODE_EMA, PRICE_CLOSE);
+    hBB      = iBands(_Symbol, InpBB_TF, InpBB_Period, 0, InpBB_Dev, PRICE_CLOSE);
+    hATR_H4  = iATR(_Symbol, PERIOD_H4, InpATR_H4_Period);
+
+    if(hRSI==INVALID_HANDLE || hRSI_M15==INVALID_HANDLE ||
+       hRSI_H1==INVALID_HANDLE || hEMA_H1==INVALID_HANDLE ||
+       hBB==INVALID_HANDLE || hATR_H4==INVALID_HANDLE) return(INIT_FAILED);
+
+    if(InpUseDynDistance) {
+        hATR_Dist = iATR(_Symbol, InpDynDist_TF, 14);
+        if(hATR_Dist == INVALID_HANDLE) return(INIT_FAILED);
+    }
+
+    // --- Trade ---
+    trade_ctrl.SetExpertMagicNumber(InpMagicNumber);
+    trade_ctrl.SetDeviationInPoints(9999);
+
+    // --- Emergency ---
+    UpdateEmergencyLevel();
+
+    // --- UI ---
+    DrawValveButton();
+
+    // --- Log ---
+    Print("🚀 XAU TITAN PRO v11.03");
+    Print("   Em:$", DoubleToString(emergency_level, 2),
+          " (", DoubleToString(InpEmergency_Pct, 0), "% of Bal)");
+    Print("   Weekend: FriStop:", InpFridayStopThai,
+          " FriClose:", InpFridayCloseThai,
+          " MonStart:", InpMondayStartThai);
+    Print("   State: NORMAL - Trading Active");
+    return(INIT_SUCCEEDED);
+}
+
+void OnDeinit(const int reason) {
+    ObjectDelete(0, "Btn_Valve");
+    Comment("");
+    if(hRSI != INVALID_HANDLE)     IndicatorRelease(hRSI);
+    if(hRSI_M15 != INVALID_HANDLE) IndicatorRelease(hRSI_M15);
+    if(hRSI_H1 != INVALID_HANDLE)  IndicatorRelease(hRSI_H1);
+    if(hEMA_H1 != INVALID_HANDLE)  IndicatorRelease(hEMA_H1);
+    if(hBB != INVALID_HANDLE)      IndicatorRelease(hBB);
+    if(hATR_H4 != INVALID_HANDLE)  IndicatorRelease(hATR_H4);
+    if(hATR_Dist != INVALID_HANDLE) IndicatorRelease(hATR_Dist);
+
+    Print("v11.03 STATS: Sniper-W:", st_sniper_win, "/+$", DoubleToString(st_sniper_win_usd, 2),
+          " Rec-W:", st_recovery_win, "/+$", DoubleToString(st_recovery_win_usd, 2));
+    Print("  T1:", total_tier1_exits, "/-$", DoubleToString(MathAbs(st_tier1_usd), 2),
+          " T2:", total_tier2_exits, "/-$", DoubleToString(MathAbs(st_tier2_usd), 2),
+          " Pair:", total_pair_closes,
+          " Panic:", total_emergency_hits, "/-$", DoubleToString(MathAbs(st_panic_usd), 2));
+    Print("  RSI:", total_sniper_rsi, " BB:", total_sniper_bb);
+}
+
+//+------------------------------------------------------------------+
+//| CHART EVENT                                                        |
+//|   ★ กดตอน PANIC → เช็ค Bal ≥ StartingBalance                     |
+//+------------------------------------------------------------------+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam) {
+    if(id == CHARTEVENT_OBJECT_CLICK && sparam == "Btn_Valve") {
+
+        // ★ กดปุ่มตอน PANIC
+        if(current_state == STATE_PANIC) {
+            double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+            if(bal >= InpStartingBalance) {
+                // Bal ≥ ทุนตั้ง → กลับมาเทรด
+                current_state = STATE_NORMAL;
+                sniper_valve = true;
+                sniper_locked = false;
+                is_in_heavy_grid_mode = false;
+                emergency_close_pending = false;
+                panic_balance = 0;
+                UpdateEmergencyLevel();
+                DrawValveButton();
+                SendNotify("🔄 RESET! Bal:$" + DoubleToString(bal, 2)
+                           + " EmLv:$" + DoubleToString(emergency_level, 2));
+            } else {
+                // Bal < ทุนตั้ง → ไม่ให้เทรด
+                sniper_valve = false;
+                DrawValveButton();
+                SendNotify("❌ Bal:$" + DoubleToString(bal, 2)
+                           + " < ทุนตั้ง $" + DoubleToString(InpStartingBalance, 2)
+                           + " → เติมเงินก่อน!");
+            }
+            return;
+        }
+
+        // ปกติ: toggle ON/OFF
+        sniper_valve = !sniper_valve;
+        DrawValveButton();
+        SendNotify(sniper_valve ? "🟢 Titan v11.03 ON!" : "🔴 Titan v11.03 OFF!");
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Emergency Level — scale ตาม Balance ปัจจุบัน                       |
+//+------------------------------------------------------------------+
+void UpdateEmergencyLevel() {
+    double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+    if(bal <= 0) bal = InpStartingBalance;
+    emergency_level = bal * (1.0 - InpEmergency_Pct / 100.0);
+}
+
+//+------------------------------------------------------------------+
+//| HELPER FUNCTIONS                                                   |
+//+------------------------------------------------------------------+
+
+// --- Auto DST ---
+int GetBrokerGMT() {
+    if(!InpAutoDetectDST) return InpBrokerGMT;
+    MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+    int m = dt.mon;
+    int d = dt.day;
+    int dow = dt.day_of_week;  // 0=อาทิตย์
+
+    // เม.ย. - ก.ย. → Summer แน่นอน (GMT+1)
+    if(m >= 4 && m <= 9) return InpBrokerGMT_Summer;
+
+    // มี.ค. → EU DST เริ่ม = อาทิตย์สุดท้ายของ มี.ค.
+    if(m == 3) {
+        int last_sun = 31 - ((dow + 31 - d) % 7);
+        if(d >= last_sun) return InpBrokerGMT_Summer;
+        return InpBrokerGMT_Winter;
+    }
+
+    // ต.ค. → EU DST จบ = อาทิตย์สุดท้ายของ ต.ค.
+    if(m == 10) {
+        int last_sun = 31 - ((dow + 31 - d) % 7);
+        if(d < last_sun) return InpBrokerGMT_Summer;
+        return InpBrokerGMT_Winter;
+    }
+
+    // พ.ย. - ก.พ. → Winter (GMT+0)
+    return InpBrokerGMT_Winter;
+}
+
+datetime GetThaiTime(datetime st) { return st + ((7 - GetBrokerGMT()) * 3600); }
+
+// Session gap — ตลาดทองหยุดทุกวัน
+// GMT+0: Server 20:55 - 22:10 = ไทย 03:55 - 05:10
+// GMT+1: Server 21:55 - 22:10 = ไทย 03:55 - 04:10
+bool IsInSessionGap() {
+    MqlDateTime s; TimeToStruct(TimeCurrent(), s);
+    int n = s.hour * 60 + s.min;
+    int gmt = GetBrokerGMT();
+    if(gmt == 0)
+        return (n >= (20 * 60 + 55) && n < (22 * 60 + 10));  // GMT+0: 20:55-22:10 = ไทย 03:55-05:10
+    else
+        return (n >= (21 * 60 + 55) && n < (22 * 60 + 10));  // GMT+1: 21:55-22:10 = ไทย 03:55-04:10
+}
+
+// ★ v11.01 FIX: IsMarketOpen() เช็ค gap/spread/session ครบ
+bool IsMarketOpen() {
+    // เช็ค trade mode
+    ENUM_SYMBOL_TRADE_MODE mode = (ENUM_SYMBOL_TRADE_MODE)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE);
+    if(mode != SYMBOL_TRADE_MODE_FULL) return false;
+
+    // เช็ค session gap
+    if(IsInSessionGap()) return false;
+
+    // เช็คว่าอยู่ใน trading session
+    MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+    datetime s, e;
+    if(!SymbolInfoSessionTrade(_Symbol, (ENUM_DAY_OF_WEEK)dt.day_of_week, 0, s, e)) return false;
+    MqlDateTime s_dt, e_dt; TimeToStruct(s, s_dt); TimeToStruct(e, e_dt);
+    int now_min = dt.hour * 60 + dt.min;
+    int s_min = s_dt.hour * 60 + s_dt.min;
+    int e_min = e_dt.hour * 60 + e_dt.min;
+    if(e_min > s_min) { if(now_min < s_min || now_min >= e_min) return false; }
+    else if(e_min < s_min) { if(now_min >= e_min && now_min < s_min) return false; }
+
+    // เช็ค spread spike
+    int spread = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+    if(spread <= 0 || spread > InpMaxSpread * 3) return false;
+
+    return true;
+}
+
+bool IsNoTradeTime(int h) {
+    if(InpNoTradeStartThai == InpNoTradeEndThai) return false;
+    if(InpNoTradeStartThai < InpNoTradeEndThai)
+        return (h >= InpNoTradeStartThai && h < InpNoTradeEndThai);
+    return (h >= InpNoTradeStartThai || h < InpNoTradeEndThai);
+}
+
+int GetRecoveryDistance() {
+    if(!InpUseDynDistance || hATR_Dist == INVALID_HANDLE) return InpDistance;
+    double a[]; ArraySetAsSeries(a, true);
+    if(CopyBuffer(hATR_Dist, 0, 0, 1, a) < 1 || a[0] <= 0) return InpDistance;
+    int d = (int)MathRound((int)MathRound(a[0] / _Point) * InpDynDist_ATR_Multi);
+    return (int)MathMax(InpDynDist_Min, MathMin(InpDynDist_Max, d));
+}
+
+double GetDynamicRecoveryTP(int cd) {
+    if(!InpUseDynTP || !InpUseDynDistance || InpDynDist_Min <= 0) return InpRecoveryTP;
+    return NormalizeDouble(InpRecoveryTP * ((double)cd / (double)InpDynDist_Min), 2);
+}
+
+bool IsATR_H4_High() {
+    if(!InpUseATR_Shield) return false;
+    double a[]; ArraySetAsSeries(a, true);
+    if(CopyBuffer(hATR_H4, 0, 0, InpATR_H4_AvgBars + 1, a) < InpATR_H4_AvgBars + 1) return false;
+    double s = 0;
+    for(int i = 1; i <= InpATR_H4_AvgBars; i++) s += a[i];
+    return (s > 0) ? (a[0] / (s / InpATR_H4_AvgBars) >= InpATR_H4_Multi) : false;
+}
+
+bool IsBreakoutSession(int h) {
+    if(InpAvoidLondon && h >= InpLondon_Open_Thai && h < InpLondon_Open_Thai + InpLondon_Duration) return true;
+    if(InpAvoidNY && h >= InpNY_Open_Thai && h < InpNY_Open_Thai + InpNY_Open_Duration) return true;
+    return false;
+}
+
+// Multi-TF RSI: score>0=BUY, score<0=SELL, 99=disabled
+int MTF_RSI_Confirm() {
+    if(!InpUseMTF) return 99;
+    double r15[], rh1[]; ArraySetAsSeries(r15, true); ArraySetAsSeries(rh1, true);
+    if(CopyBuffer(hRSI_M15, 0, 0, 1, r15) < 1 || CopyBuffer(hRSI_H1, 0, 0, 1, rh1) < 1) return 0;
+    int s = 0;
+    if(r15[0] <= InpRSI_M15_Low) s++; if(r15[0] >= InpRSI_M15_High) s--;
+    if(rh1[0] <= InpRSI_H1_Low) s++;  if(rh1[0] >= InpRSI_H1_High) s--;
+    return s;
+}
+
+// BB Signal: 1=Lower(BUY), -1=Upper(SELL)
+int BB_Signal() {
+    if(!InpUseBB) return 0;
+    double u[], l[]; ArraySetAsSeries(u, true); ArraySetAsSeries(l, true);
+    if(CopyBuffer(hBB, 1, 0, 1, u) < 1 || CopyBuffer(hBB, 2, 0, 1, l) < 1) return 0;
+    double b = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    if(b <= l[0]) return 1; if(b >= u[0]) return -1;
+    return 0;
+}
+
+// Spread Safety
+bool IsSpreadSafe(int c) {
+    if(c > InpMaxSpread) return false;
+    int sb[]; int n = CopySpread(_Symbol, PERIOD_M1, 0, 10, sb);
+    if(n > 0) {
+        int s = 0; int m = MathMin(n, 10);
+        for(int i = 0; i < m; i++) s += sb[i];
+        int avg = s / m; if(avg <= 0) avg = 1;
+        if(c > (int)(avg * 1.5)) return false;
+    }
+    return true;
+}
+
+int CountPos() {
+    int count = 0;
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        ulong tk = PositionGetTicket(i);
+        if(tk > 0 && PositionSelectByTicket(tk) &&
+           PositionGetString(POSITION_SYMBOL) == _Symbol &&
+           PositionGetInteger(POSITION_MAGIC) == InpMagicNumber) count++;
+    }
+    return count;
+}
+
+double SafeLotSize(double l) {
+    double mn = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+    double mx = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+    double st = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+    if(st <= 0) st = 0.01;
+    return NormalizeDouble(MathMax(mn, MathMin(mx, MathRound(l / st) * st)), 2);
+}
+
+// ★ v11.03: OpenTrade() รับ comment เพื่อแยก Sniper/Recovery
+bool OpenTrade(ENUM_ORDER_TYPE type, double lot, string comment) {
+    if(!IsMarketOpen()) {
+        sniper_locked = true;
+        sniper_cooldown_until = TimeCurrent() + 60;
+        return false;
+    }
+    // ★★★ FIX: ป้องกัน race condition — ห้ามยิงซ้ำภายใน 2 วินาที ★★★
+    if(TimeCurrent() - last_trade_time < 2) return false;
+
+    double p = (type == ORDER_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double r = 0;
+    if(OrderCalcMargin(type, _Symbol, lot, p, r) && AccountInfoDouble(ACCOUNT_MARGIN_FREE) < r * 1.1) return false;
+    if(trade_ctrl.PositionOpen(_Symbol, type, lot, p, 0, 0, comment)) {
+        last_trade_time = TimeCurrent();  // ★ จำเวลายิง
+        return true;
+    }
+    // ★ ล้มเหลว → lock ไม่ให้ยิงซ้ำ
+    sniper_locked = true;
+    sniper_cooldown_until = TimeCurrent() + 60;
+    return false;
+}
+
+// CloseAll — retry 3 ครั้ง — return สำเร็จ/ไม่
+bool CloseAll() {
+    if(!IsMarketOpen()) return false;
+    bool all_closed = true;
+    for(int retry = 0; retry < 3; retry++) {
+        all_closed = true;
+        for(int i = PositionsTotal() - 1; i >= 0; i--) {
+            ulong tk = PositionGetTicket(i);
+            if(tk > 0 && PositionSelectByTicket(tk) &&
+               PositionGetString(POSITION_SYMBOL) == _Symbol &&
+               PositionGetInteger(POSITION_MAGIC) == InpMagicNumber) {
+                if(!trade_ctrl.PositionClose(tk, 500)) {
+                    all_closed = false; Sleep(300);
+                }
+            }
+        }
+        if(all_closed) break;
+        Sleep(500);
+    }
+    return all_closed;
+}
+
+void DrawValveButton() {
+    string btn = "Btn_Valve";
+    if(ObjectFind(0, btn) < 0) {
+        ObjectCreate(0, btn, OBJ_BUTTON, 0, 0, 0);
+        ObjectSetInteger(0, btn, OBJPROP_XDISTANCE, 0);
+        ObjectSetInteger(0, btn, OBJPROP_YDISTANCE, 290);
+        ObjectSetInteger(0, btn, OBJPROP_XSIZE, 220);
+        ObjectSetInteger(0, btn, OBJPROP_YSIZE, 35);
+        ObjectSetInteger(0, btn, OBJPROP_FONTSIZE, 11);
+        ObjectSetInteger(0, btn, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+        ObjectSetInteger(0, btn, OBJPROP_SELECTABLE, false);
+    }
+    if(current_state == STATE_PANIC) {
+        ObjectSetString(0, btn, OBJPROP_TEXT, "🚨 PANIC — กดเพื่อ RESET");
+        ObjectSetInteger(0, btn, OBJPROP_BGCOLOR, clrDarkRed);
+    } else {
+        ObjectSetString(0, btn, OBJPROP_TEXT, sniper_valve ? "🟢 TITAN v11.03 ON" : "🔴 TITAN v11.03 OFF");
+        ObjectSetInteger(0, btn, OBJPROP_BGCOLOR, sniper_valve ? clrMediumSeaGreen : clrCrimson);
+    }
+    ObjectSetInteger(0, btn, OBJPROP_COLOR, clrWhite);
+    ObjectSetInteger(0, btn, OBJPROP_STATE, !sniper_valve);
+    ChartRedraw();
+}
+
+void SendNotify(string msg) { Print(msg); if(InpEnableNotify) SendNotification(msg); }
+
+//+------------------------------------------------------------------+
+//| ดึง Commission จาก Deal History                                    |
+//+------------------------------------------------------------------+
+double GetPositionCommission(ulong position_ticket) {
+    double comm = 0;
+    if(HistorySelectByPosition(position_ticket)) {
+        for(int i = HistoryDealsTotal() - 1; i >= 0; i--) {
+            ulong deal_ticket = HistoryDealGetTicket(i);
+            if(deal_ticket > 0) {
+                comm += HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION);
+                comm += HistoryDealGetDouble(deal_ticket, DEAL_FEE);
+            }
+        }
+    }
+    bool is_open = false;
+    if(PositionSelectByTicket(position_ticket)) is_open = true;
+    if(is_open) return comm * 2.0;
+    return comm;
+}
+
+//+------------------------------------------------------------------+
+//| MAIN TICK                                                          |
+//+------------------------------------------------------------------+
+void OnTick() {
+
+    if(!TerminalInfoInteger(TERMINAL_CONNECTED)) return;
+
+    double cur_bal = AccountInfoDouble(ACCOUNT_BALANCE);
+    double cur_equ = AccountInfoDouble(ACCOUNT_EQUITY);
+    double net_profit = cur_bal - InpStartingBalance;
+
+    datetime server_time = TimeCurrent();
+    datetime thai_time = GetThaiTime(server_time);
+    MqlDateTime t_dt; TimeToStruct(thai_time, t_dt);
+    // --- Cooldown ---
+    if(sniper_locked && TimeCurrent() >= sniper_cooldown_until && CountPos() == 0) sniper_locked = false;
+
+    // Update Emergency เมื่อพอร์ตว่าง (ไม่ใช่ PANIC)
+    if(CountPos() == 0 && current_state != STATE_PANIC) UpdateEmergencyLevel();
+
+    // --- Emergency CloseAll retry ---
+    if(emergency_close_pending && IsMarketOpen()) {
+        int remaining = CountPos();
+        if(remaining > 0) {
+            Print("🔄 Retry CloseAll (", remaining, " positions)");
+            if(CloseAll()) { emergency_close_pending = false; Print("✅ Emergency CloseAll สำเร็จ!"); }
+        } else { emergency_close_pending = false; }
+    }
+
+    // =================================================================
+    // WEEKEND GUARD
+    //   ศุกร์ 13:00 → ปิด Sniper (Recovery ยังทำงาน)
+    //   ศุกร์ 20:30 → แจ้งเตือน 30 นาทีก่อนปิด
+    //   ★ ศุกร์ 21:00 → CloseAll บังคับ → WEEKEND_STOP
+    //   จันทร์ 09:00 → เปิด Sniper (รอตลาดนิ่งก่อน)
+    // =================================================================
+    // --- EMERGENCY ---
+    if(cur_equ <= emergency_level && current_state != STATE_PANIC) {
+        current_state = STATE_PANIC;
+        sniper_valve = false;
+        DrawValveButton();
+        total_emergency_hits++;
+
+        // ★ คำนวณ floating PnL ตรงนี้เลย (total_p ยังไม่ประกาศ)
+        double panic_float = 0;
+        for(int i = PositionsTotal() - 1; i >= 0; i--) {
+            ulong tk = PositionGetTicket(i);
+            if(tk > 0 && PositionSelectByTicket(tk) &&
+               PositionGetString(POSITION_SYMBOL) == _Symbol &&
+               PositionGetInteger(POSITION_MAGIC) == InpMagicNumber) {
+                panic_float += PositionGetDouble(POSITION_PROFIT)
+                             + PositionGetDouble(POSITION_SWAP)
+                             + GetPositionCommission(tk);
+            }
+        }
+
+        if(IsMarketOpen() && !IsInSessionGap()) {
+            double pre_panic_bal = AccountInfoDouble(ACCOUNT_BALANCE);
+            if(!CloseAll()) {
+                emergency_close_pending = true;
+                st_panic_usd += panic_float;
+                SendNotify("🚨 EMERGENCY! ปิดไม่สำเร็จ! Eq:$" + DoubleToString(cur_equ, 2));
+            } else {
+                panic_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+                st_panic_usd += (panic_balance - pre_panic_bal);
+                SendNotify("🚨 EMERGENCY! ปิดแล้ว Bal:$" + DoubleToString(panic_balance, 2));
+            }
+        } else {
+            emergency_close_pending = true;
+            st_panic_usd += panic_float;
+            SendNotify("🚨 EMERGENCY! ตลาดปิด! Eq:$" + DoubleToString(cur_equ, 2));
+        }
+        return;
+    }
+	// -------------------------------
+	
+	int orders_pre = CountPos();
+    if(InpUseWeekendGuard) {
+        if(t_dt.day_of_week == 5) {
+
+            // ศุกร์ 13:00 → ปิด Sniper
+            if(t_dt.hour >= InpFridayStopThai && t_dt.hour < InpFridayCloseThai) {
+                if(current_state != STATE_FRIDAY_COOLDOWN
+                   && current_state != STATE_WEEKEND_STOP
+                   && current_state != STATE_PANIC
+                   && current_state != STATE_GOAL_REACHED) {
+                    current_state = STATE_FRIDAY_COOLDOWN;
+                    sniper_valve = false;
+                    DrawValveButton();
+                }
+                if(!friday_stop_notified) {
+                    SendNotify(orders_pre > 0
+                        ? "🟡 [ศ." + IntegerToString(InpFridayStopThai) + ":00] Sniper OFF! ค้าง " + IntegerToString(orders_pre) + " ไม้ (Recovery ทำงาน)"
+                        : "🟢 [ศ." + IntegerToString(InpFridayStopThai) + ":00] Sniper OFF! พอร์ตว่าง");
+                    friday_stop_notified = true;
+                }
+
+                // แจ้งเตือนก่อน CloseAll ตาม InpFridayWarnBeforeMin
+				int now_min_th = t_dt.hour * 60 + t_dt.min;
+				int close_min_th = InpFridayCloseThai * 60;
+				int warn_min_th = close_min_th - InpFridayWarnBeforeMin;
+				if(now_min_th >= warn_min_th && now_min_th < close_min_th && !friday_warn_notified) {
+					if(orders_pre > 0) {
+						if(InpFridayCloseAll)
+							SendNotify("⚠️ ใกล้เวลา [ศ." + IntegerToString(InpFridayCloseThai) + ":00] ปิดรวบ! ค้าง "
+									   + IntegerToString(orders_pre) + " ไม้");
+						else
+							SendNotify("⚠️ ใกล้เวลา [ศ." + IntegerToString(InpFridayCloseThai) + ":00] เข้าวีคเอนด์ (ไม่ปิดรวบ) ค้าง "
+									   + IntegerToString(orders_pre) + " ไม้");
+					} else {
+						SendNotify("ℹ️ ใกล้เวลา [ศ." + IntegerToString(InpFridayCloseThai) + ":00] พอร์ตว่าง");
+					}
+					friday_warn_notified = true;
+				}
+            }
+
+            // ศุกร์ 21:00 → CloseAll บังคับ (ถ้าเปิดใช้) → WEEKEND_STOP
+            if(t_dt.hour >= InpFridayCloseThai) {
+                if(InpFridayCloseAll && !friday_close_done) {
+                    int to_close = CountPos();
+                    if(to_close > 0 && IsMarketOpen()) {
+                        CloseAll();
+                        SendNotify("🔴 [ศ." + IntegerToString(InpFridayCloseThai) + ":00] ปิดรวบ " + IntegerToString(to_close) + " ไม้! 🛌");
+                    } else if(to_close == 0) {
+                        SendNotify("🔴 Weekend! พอร์ตว่าง ✅🛌");
+                    }
+                    friday_close_done = true;
+                }
+                if(current_state != STATE_WEEKEND_STOP
+                   && current_state != STATE_PANIC
+                   && current_state != STATE_GOAL_REACHED) {
+                    current_state = STATE_WEEKEND_STOP;
+                    sniper_valve = false;
+                    DrawValveButton();
+                    if(!InpFridayCloseAll && !friday_close_done) {
+                        int still_open = CountPos();
+                        if(still_open > 0)
+                            SendNotify("🟡 Weekend! ค้าง " + IntegerToString(still_open) + " ไม้ (ไม่ปิดรวบ) 🛌");
+                        else
+                            SendNotify("🔴 Weekend! พอร์ตว่าง ✅🛌");
+                        friday_close_done = true;
+                    }
+                }
+                return;
+            }
+        }
+
+        // จันทร์ 09:00 → เปิด Sniper (รอตลาดนิ่งก่อน)
+        if(t_dt.day_of_week == 1 && t_dt.hour >= InpMondayStartThai) {
+            if(current_state == STATE_FRIDAY_COOLDOWN || current_state == STATE_WEEKEND_STOP) {
+                current_state = STATE_NORMAL;
+                sniper_valve = true;
+                DrawValveButton();
+                sniper_locked = false;
+                friday_stop_notified = false;
+                friday_warn_notified = false;
+                friday_close_done = false;
+                SendNotify("🟢 [จ." + IntegerToString(InpMondayStartThai) + ":00] เริ่มเทรด!");
+            }
+        }
+
+        // จันทร์ก่อนเวลาเปิด → หยุด
+        if(t_dt.day_of_week == 1 && t_dt.hour < InpMondayStartThai) {
+            if(current_state == STATE_WEEKEND_STOP || current_state == STATE_FRIDAY_COOLDOWN) return;
+        }
+
+        // Reset flags อังคาร-พฤหัส
+        if(t_dt.day_of_week >= 2 && t_dt.day_of_week <= 4) {
+            friday_stop_notified = false;
+            friday_warn_notified = false;
+            friday_close_done = false;
+        }
+    }
+
+    if(!InpUseWeekendGuard && (current_state == STATE_FRIDAY_COOLDOWN || current_state == STATE_WEEKEND_STOP)) {
+        current_state = STATE_NORMAL; sniper_valve = true; DrawValveButton();
+        friday_stop_notified = false; friday_warn_notified = false; friday_close_done = false;
+    }
+
+    // =================================================================
+    // STATE CHECK
+    // =================================================================
+
+    // --- GOAL ---
+    if(current_state == STATE_GOAL_REACHED) {
+        if(net_profit < InpProfitStop) {
+            current_state = STATE_NORMAL; sniper_valve = true; DrawValveButton();
+            SendNotify("✅ ถอนแล้ว!");
+        } else {
+            Comment("💰 GOAL! +$", DoubleToString(net_profit, 2)); return;
+        }
+    }
+
+    // --- PANIC: หยุดถาวร รอเติมเงิน/กดปุ่ม ---
+    if(current_state == STATE_PANIC) {
+        int panic_pos = CountPos();
+
+        // ยังค้าง → ปิดทุก tick
+        if(panic_pos > 0) {
+            if(IsMarketOpen()) {
+                if(CloseAll()) {
+                    emergency_close_pending = false;
+                    panic_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+                    SendNotify("✅ PANIC CloseAll สำเร็จ!");
+                }
+            }
+            Comment("🚨 PANIC! ค้าง ", panic_pos, " ไม้ รอตลาดเปิด...");
+            return;
+        }
+
+        // ปิดหมดแล้ว → จำ Balance ตอนพัง
+        if(panic_balance == 0) panic_balance = cur_bal;
+
+        // เติมเงิน (+$1) → auto NORMAL
+        if(cur_bal >= panic_balance + 1.0) {
+            panic_balance = 0;
+            current_state = STATE_NORMAL;
+            sniper_valve = true;
+            sniper_locked = false;
+            is_in_heavy_grid_mode = false;
+            emergency_close_pending = false;
+            UpdateEmergencyLevel();
+            DrawValveButton();
+            SendNotify("✅ เติมเงิน! Bal:$" + DoubleToString(cur_bal, 2)
+                       + " EmLv:$" + DoubleToString(emergency_level, 2));
+        } else {
+            Comment("🚨 PANIC! Bal:$", DoubleToString(cur_bal, 2),
+                    " เติมเงิน(+$1) หรือ กดปุ่ม(Bal≥$",
+                    DoubleToString(InpStartingBalance, 2), ")");
+            DrawValveButton();
+        }
+        return;
+    }
+
+    // --- GOAL CHECK ---
+    if(net_profit >= InpProfitStop && CountPos() == 0 && current_state != STATE_GOAL_REACHED) {
+        current_state = STATE_GOAL_REACHED; sniper_valve = false; DrawValveButton();
+        SendNotify("💰 +$" + DoubleToString(net_profit, 2)); return;
+    }
+
+
+    // =================================================================
+    // PROCESS POSITIONS
+    // ★ รวม commission ในคำนวณ
+    // =================================================================
+    int    orders = 0;
+    double total_p = 0, last_op = 0;
+    ENUM_POSITION_TYPE last_t = POSITION_TYPE_BUY;
+    ulong  oldest_tk = 0, newest_tk = 0;
+    double oldest_p = 0, newest_p = 0;
+    datetime oldest_time = 0, newest_time = 0;
+	string newest_comment = "";
+
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        ulong tk = PositionGetTicket(i);
+        if(tk > 0 && PositionSelectByTicket(tk) &&
+           PositionGetString(POSITION_SYMBOL) == _Symbol &&
+           PositionGetInteger(POSITION_MAGIC) == InpMagicNumber) {
+            orders++;
+            double pnl = PositionGetDouble(POSITION_PROFIT)
+                       + PositionGetDouble(POSITION_SWAP)
+                       + GetPositionCommission(tk);
+            total_p += pnl;
+            ENUM_POSITION_TYPE pt = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+            datetime ot = (datetime)PositionGetInteger(POSITION_TIME);
+			if(newest_time == 0 || ot > newest_time) {
+				newest_time = ot; newest_tk = tk; newest_p = pnl;
+				last_op = PositionGetDouble(POSITION_PRICE_OPEN);
+				last_t = pt;
+				newest_comment = PositionGetString(POSITION_COMMENT);
+			}
+            if(oldest_time == 0 || ot < oldest_time) {
+                oldest_time = ot; oldest_tk = tk; oldest_p = pnl;
+            }
+        }
+    }
+	
+	
+    // Heavy Grid mode
+    if(orders == 0) is_in_heavy_grid_mode = false;
+    else if(orders >= InpHeavyGrid_Trigger) is_in_heavy_grid_mode = true;
+
+    // Hold Alert
+    if(orders > 0 && InpNotifyHoldHours > 0 && oldest_time > 0) {
+        int held = (int)((TimeCurrent() - oldest_time) / 3600);
+        if(held >= InpNotifyHoldHours && t_dt.hour != last_hold_alert_hour) {
+            last_hold_alert_hour = t_dt.hour;
+            SendNotify("⏰ " + IntegerToString(held) + "ชม. " +
+                        IntegerToString(orders) + "ไม้ $" + DoubleToString(total_p, 2));
+        }
+    }
+
+    // --- Gap Alert: ไม้ล่าสุด vs ไม้ก่อนหน้า (แจ้ง 1 ครั้งต่อ gap) ---
+    if(InpUseGapAlert && orders >= 2 && orders != gap_alerted_at_orders) {
+
+        ulong    ga_tk1 = 0, ga_tk2 = 0;
+        double   ga_op1 = 0, ga_op2 = 0;
+        datetime ga_t1 = 0, ga_t2 = 0;
+
+        for(int i = PositionsTotal() - 1; i >= 0; i--) {
+            ulong tk = PositionGetTicket(i);
+            if(tk > 0 && PositionSelectByTicket(tk) &&
+               PositionGetString(POSITION_SYMBOL) == _Symbol &&
+               PositionGetInteger(POSITION_MAGIC) == InpMagicNumber) {
+                datetime ot = (datetime)PositionGetInteger(POSITION_TIME);
+                if(ot > ga_t1) {
+                    ga_t2 = ga_t1; ga_tk2 = ga_tk1; ga_op2 = ga_op1;
+                    ga_t1 = ot; ga_tk1 = tk;
+                    ga_op1 = PositionGetDouble(POSITION_PRICE_OPEN);
+                } else if(ot > ga_t2) {
+                    ga_t2 = ot; ga_tk2 = tk;
+                    ga_op2 = PositionGetDouble(POSITION_PRICE_OPEN);
+                }
+            }
+        }
+
+        if(ga_tk1 > 0 && ga_tk2 > 0) {
+            double gap_pts = MathAbs(ga_op1 - ga_op2) / _Point;
+            if(gap_pts >= InpGapAlertPoints) {
+                gap_alerted_at_orders = orders;
+                SendNotify("⚠️ GAP! " + IntegerToString((int)gap_pts) + " pts"
+                         + " | " + DoubleToString(ga_op2, 2)
+                         + " → " + DoubleToString(ga_op1, 2)
+                         + " | " + IntegerToString(orders) + " ไม้"
+                         + " $" + DoubleToString(total_p, 2));
+            }
+        }
+    }
+	if(orders == 0) {
+		gap_alerted_at_orders = 0;
+		grid_warn_at_orders = 0;
+		emergency_warn_sent = false;
+		trail_active = false;
+		trail_peak_profit = 0;
+		recovery_dist_armed = false;
+		recovery_dist_bar_time = 0;
+	}
+
+    // ★ แจ้งเตือนเมื่อ Equity ใกล้ Emergency
+    if(orders > 0 && !emergency_warn_sent && emergency_level > 0) {
+        double dist_to_em = cur_equ - emergency_level;
+        double total_dist = cur_bal - emergency_level;
+        if(total_dist > 0 && dist_to_em < total_dist * (InpEmergencyWarnPct / 100.0)) {
+            SendNotify("🚨 WARNING! Eq:$" + DoubleToString(cur_equ, 2)
+                     + " ใกล้ EmLv:$" + DoubleToString(emergency_level, 2)
+                     + " เหลือ $" + DoubleToString(dist_to_em, 2)
+                     + " | " + IntegerToString(orders) + " ไม้");
+            emergency_warn_sent = true;
+        }
+    }
+
+    // --- Indicators ---
+    bool atr_high = IsATR_H4_High();
+    bool session_risk = IsBreakoutSession(t_dt.hour);
+    bool no_trade = IsNoTradeTime(t_dt.hour);
+    int  cur_dist = GetRecoveryDistance();
+    double cur_rec_tp = GetDynamicRecoveryTP(cur_dist);
+
+    // --- Target ---
+    // ★ Tier2 > Tier1 > Heavy Grid > Recovery > Sniper
+    double target;
+    string tgt_label = "";
+    if(orders >= InpTier2_Trigger) {
+        target = InpTier2_Exit;                 // Tier2: ≥6 ไม้ ยอมเสีย $-30
+        tgt_label = " [TIER2]";
+    }
+    else if(orders >= InpTier1_Trigger) {
+        target = InpTier1_Exit;                 // Tier1: ≥4 ไม้ ยอมเสีย $-5
+        tgt_label = " [TIER1]";
+    }
+    else if(is_in_heavy_grid_mode) {
+        target = InpHeavyGrid_ExitUSD;          // Heavy Grid STICKY $1
+        tgt_label = " [STICKY]";
+    }
+    else if(orders > 1) {
+        target = cur_rec_tp;                    // Grid Dynamic TP
+    }
+    else {
+        target = InpSniperTP;                   // Sniper TP
+    }
+
+    // --- Dashboard ---
+    string st_str = "RUN";
+    if(current_state == STATE_FRIDAY_COOLDOWN) st_str = "FRI-COOL";
+    else if(current_state == STATE_WEEKEND_STOP) st_str = "WKND-STOP";
+    else if(no_trade) st_str = "NO-TRADE";
+
+    string shield = "";
+    if(atr_high) shield += "ATR! ";
+    if(session_risk) shield += "SESS! ";
+    if(shield == "") shield = "CLEAR";
+
+    string dash = "";
+    dash += "======= XAU TITAN PRO v11.03 =======\n";
+    dash += "TH:" + TimeToString(thai_time, TIME_MINUTES) + " | " + st_str + "\n";
+    dash += "Eq:$" + DoubleToString(cur_equ, 2)
+          + " Bal:$" + DoubleToString(cur_bal, 2)
+          + " Net:$" + DoubleToString(net_profit, 2) + "\n";
+    dash += "Target:$" + DoubleToString(target, 2) + tgt_label + "\n";
+    dash += "Dist:" + IntegerToString(cur_dist)
+          + (InpUseDynDistance ? "(DYN)" : "(FIX)")
+          + " EmLv:$" + DoubleToString(emergency_level, 2) + "\n";
+    dash += "Grid:" + IntegerToString(orders) + "/" + IntegerToString(InpMaxOrders)
+          + " Float:$" + DoubleToString(total_p, 2) + "\n";
+    dash += "Shield: " + shield + "\n";
+	if(orders == 1) {
+		dash += "Type:" + (newest_comment == "" ? "UNKNOWN" : newest_comment) + "\n";
+	}
+	if(trail_active) {
+		dash += "Trail: peak=$" + DoubleToString(trail_peak_profit, 2)
+			  + " sl=$" + DoubleToString(trail_peak_profit - InpTrailStep, 2) + "\n";
+	}
+    dash += "--- Performance ---\n";
+    dash += "Sniper-W:" + IntegerToString(st_sniper_win) + "/+$" + DoubleToString(st_sniper_win_usd, 2)
+          + " Rec-W:" + IntegerToString(st_recovery_win) + "/+$" + DoubleToString(st_recovery_win_usd, 2) + "\n";
+    dash += "T1:" + IntegerToString(total_tier1_exits) + "/-$" + DoubleToString(MathAbs(st_tier1_usd), 2)
+          + " T2:" + IntegerToString(total_tier2_exits) + "/-$" + DoubleToString(MathAbs(st_tier2_usd), 2)
+          + " Pair:" + IntegerToString(total_pair_closes)
+          + " Panic:" + IntegerToString(total_emergency_hits) + "/-$" + DoubleToString(MathAbs(st_panic_usd), 2) + "\n";
+    dash += "RSI:" + IntegerToString(total_sniper_rsi) + " BB:" + IntegerToString(total_sniper_bb) + "\n";
+    dash += "--- Blocked ---\n";
+    dash += "MTF:" + IntegerToString(total_blocked_mtf)
+          + " ATR:" + IntegerToString(total_blocked_atr)
+          + " Sess:" + IntegerToString(total_blocked_session) + "\n";
+    dash += "NoT:" + IntegerToString(total_blocked_notime)
+          + " Spd:" + IntegerToString(total_blocked_spread) + "\n";
+    dash += "Valve:" + (sniper_valve ? "ON" : "OFF");
+    if(emergency_close_pending) dash += " | PENDING!";
+
+    Comment(dash);
+
+    // =================================================================
+    // RECOVERY ENGINE
+    // =================================================================
+    if(orders > 0) {
+		// ★ FIX#6: Reset trail เมื่อ Recovery เปิดไม้ที่ 2+
+		if(orders > 1) { trail_active = false; trail_peak_profit = 0; }
+		// ★ Trailing TP — Sniper 1 ไม้เท่านั้น
+	    if(InpUseTrailTP && orders == 1 && newest_comment == "T1103-S") {
+		  if(!trail_active && total_p >= InpTrailStart) {
+			  trail_active = true;
+			  trail_peak_profit = total_p;
+		  }
+		  if(trail_active) {
+			  if(total_p > trail_peak_profit) trail_peak_profit = total_p;
+			  double trail_sl = trail_peak_profit - InpTrailStep;
+			  if(total_p <= trail_sl) {
+				  // โดน Trail SL → ปิด
+				double bal_before_trail = AccountInfoDouble(ACCOUNT_BALANCE);
+				double eq_before_trail  = AccountInfoDouble(ACCOUNT_EQUITY);
+
+				Print("📊 TRAIL PRE: float=$", DoubleToString(total_p, 2),
+					  " peak=$", DoubleToString(trail_peak_profit, 2),
+					  " sl=$", DoubleToString(trail_peak_profit - InpTrailStep, 2),
+					  " eq=$", DoubleToString(eq_before_trail, 2),
+					  " bal=$", DoubleToString(bal_before_trail, 2));
+				  if(CloseAll()) {
+					double realized_trail = AccountInfoDouble(ACCOUNT_BALANCE) - bal_before_trail;
+					Print("📊 TRAIL POST: realized=$", DoubleToString(realized_trail, 2),
+						  " bal=$", DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2));
+					st_sniper_win++;
+					st_sniper_win_usd += realized_trail;
+				  }
+				  trail_active = false;
+				  trail_peak_profit = 0;
+				  is_in_heavy_grid_mode = false;
+				  return;
+			  }
+			  return;  // ★ Trail active → ไม่ปิดปกติ รอ trail
+		  }
+	    }
+        // ALL TP / Tier Exit
+        if(total_p >= target) {
+            // ★ จำ category ก่อน CloseAll
+            int exit_type = 0;  // 0=none, 1=T2, 2=T1, 3=Sniper, 4=Recovery
+			string exit_name = "NONE";
+			double bal_before_close = AccountInfoDouble(ACCOUNT_BALANCE);
+			double eq_before_close  = AccountInfoDouble(ACCOUNT_EQUITY);
+
+			if(orders >= InpTier2_Trigger && target <= 0) {
+				exit_type = 1;
+				exit_name = "T2";
+				SendNotify("Tier2 Exit! " + IntegerToString(orders) + " pos $" + DoubleToString(total_p, 2));
+			}
+			else if(orders >= InpTier1_Trigger && target <= 0) {
+				exit_type = 2;
+				exit_name = "T1";
+				SendNotify("Tier1 Exit! " + IntegerToString(orders) + " pos $" + DoubleToString(total_p, 2));
+			}
+			else if(orders == 1) {
+				exit_type = 3;
+				exit_name = "Sniper";
+			}
+			else if(orders >= 2) {
+				exit_type = 4;
+				exit_name = "Recovery";
+			}
+
+            // ★ นับ $ เฉพาะเมื่อ CloseAll สำเร็จ → ไม่นับซ้ำ!
+			Print("📊 EXIT PRE: type=", exit_name,
+				  " orders=", orders,
+				  " float=$", DoubleToString(total_p, 2),
+				  " target=$", DoubleToString(target, 2),
+				  " eq=$", DoubleToString(eq_before_close, 2),
+				  " bal=$", DoubleToString(bal_before_close, 2));
+			if(CloseAll()) {
+				double realized = AccountInfoDouble(ACCOUNT_BALANCE) - bal_before_close;
+
+				Print("📊 EXIT POST: type=", exit_name,
+					  " realized=$", DoubleToString(realized, 2),
+					  " bal=$", DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2));
+
+				if(exit_type == 1)      { total_tier2_exits++; st_tier2_usd += realized; }
+				else if(exit_type == 2) { total_tier1_exits++; st_tier1_usd += realized; }
+				else if(exit_type == 3) { st_sniper_win++; st_sniper_win_usd += realized; }
+				else if(exit_type == 4) { st_recovery_win++; st_recovery_win_usd += realized; }
+			}
+			// ★ Reset Trailing
+			trail_active = false;
+			trail_peak_profit = 0;
+            is_in_heavy_grid_mode = false;
+            return;
+        }
+
+        // ★ v11.01 FIX: PAIR CLOSE — เช็ค return
+        if(InpUsePairClose && orders >= InpHeavyGrid_Trigger && orders >= 3
+           && oldest_tk != newest_tk && oldest_tk > 0 && newest_tk > 0) {
+            if(newest_p > 0 && (oldest_p + newest_p) >= InpPairClose_TargetUSD) {
+				if(IsMarketOpen()) {
+					bool c1 = trade_ctrl.PositionClose(newest_tk, 500);
+					if(!c1) { Sleep(200); c1 = trade_ctrl.PositionClose(newest_tk, 500); }
+					
+					bool c2 = false;
+					if(c1) {
+						c2 = trade_ctrl.PositionClose(oldest_tk, 500);
+						if(!c2) { Sleep(200); c2 = trade_ctrl.PositionClose(oldest_tk, 500); }
+					}
+					
+					if(c1 && c2) {
+						total_pair_closes++;
+						SendNotify("⚖️ Pair! $" + DoubleToString(oldest_p + newest_p, 2));
+					} else if(c1 && !c2) {
+						SendNotify("⚠️ Pair PARTIAL! newest ปิดแล้ว oldest ค้าง $" + DoubleToString(oldest_p, 2));
+					} else {
+						SendNotify("❌ Pair Close failed!");
+					}
+				}
+                return;
+            }
+        }
+
+        // GRID RECOVERY
+		if(orders < InpMaxOrders) {
+			bool friday_block = ((current_state == STATE_FRIDAY_COOLDOWN || current_state == STATE_WEEKEND_STOP)
+								 && !InpAllowFridayRecovery);
+			if(!friday_block) {
+				double price = (last_t == POSITION_TYPE_BUY)
+					? SymbolInfoDouble(_Symbol, SYMBOL_BID)
+					: SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+				bool dist_ok = false;
+				if(last_t == POSITION_TYPE_BUY && (last_op - price) >= cur_dist * _Point) dist_ok = true;
+				if(last_t == POSITION_TYPE_SELL && (price - last_op) >= cur_dist * _Point) dist_ok = true;
+
+				if(dist_ok) {
+					bool use_base_confirm_now = (InpUseRecoveryBaseConfirm && orders <= InpOrderBaseConfirm);
+
+					if(use_base_confirm_now) {
+						datetime arm_bar_time = iTime(_Symbol, _Period, 1);
+
+						if(!recovery_dist_armed) {
+							recovery_dist_armed = true;
+							recovery_dist_bar_time = arm_bar_time;
+						}
+
+						int bars_passed = iBarShift(_Symbol, _Period, recovery_dist_bar_time, false);
+						if(bars_passed < 0) bars_passed = 9999;
+
+						if(bars_passed > InpRecoveryConfirmWindowBars) {
+							recovery_dist_armed = false;
+							recovery_dist_bar_time = 0;
+						}
+					}
+
+					double rn[]; ArraySetAsSeries(rn, true);
+					if(CopyBuffer(hRSI, 0, 0, 1, rn) > 0) {
+						bool rsi_ok = (last_t == POSITION_TYPE_BUY)
+							? (rn[0] > InpRecoveryRSI_Buy_Min)
+							: (rn[0] < InpRecoveryRSI_Sell_Max);
+
+						bool base_ok = true;
+						bool allow_entry = true;
+
+						if(use_base_confirm_now) {
+							double low1   = iLow(_Symbol, _Period, 1);
+							double low2   = iLow(_Symbol, _Period, 2);
+							double high1  = iHigh(_Symbol, _Period, 1);
+							double high2  = iHigh(_Symbol, _Period, 2);
+							double open1  = iOpen(_Symbol, _Period, 1);
+							double close1 = iClose(_Symbol, _Period, 1);
+
+							base_ok = (last_t == POSITION_TYPE_BUY)
+								? (low1 >= low2 && close1 > open1)
+								: (high1 <= high2 && close1 < open1);
+
+							allow_entry = recovery_dist_armed;
+						}
+
+						if(rsi_ok && base_ok && allow_entry) {
+							double nl = SafeLotSize(InpStartLot);
+							ENUM_ORDER_TYPE rt = (last_t == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+
+							if(OpenTrade(rt, nl, "T1103-R")) {
+								sniper_locked = true;
+								sniper_cooldown_until = TimeCurrent() + InpRecoveryCooldownSec;
+
+								recovery_dist_armed = false;
+								recovery_dist_bar_time = 0;
+
+								int new_count = CountPos();
+								if(new_count >= InpGridWarnOrders && new_count > grid_warn_at_orders) {
+									grid_warn_at_orders = new_count;
+									if(new_count >= InpMaxOrders)
+										SendNotify("🔴 MAX GRID! " + IntegerToString(new_count) + "/" + IntegerToString(InpMaxOrders) + " ไม้ float:$" + DoubleToString(total_p, 2));
+									else
+										SendNotify("🟡 GRID " + IntegerToString(new_count) + "/" + IntegerToString(InpMaxOrders) + " ไม้ float:$" + DoubleToString(total_p, 2));
+								}
+							}
+						}
+					}
+				} else {
+					recovery_dist_armed = false;
+					recovery_dist_bar_time = 0;
+				}
+			}
+		}
+        return;
+    }
+
+    // =================================================================
+    // SNIPER ENGINE
+    // =================================================================
+    if(!sniper_valve || current_state != STATE_NORMAL) return;
+    if(no_trade) { total_blocked_notime++; return; }
+    if(!IsSpreadSafe((int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD))) { total_blocked_spread++; return; }
+    if(sniper_locked) return;
+    if(atr_high) { total_blocked_atr++; return; }
+    if(session_risk) { total_blocked_session++; return; }
+    // ★★★ FIX: ถ้ามีไม้อยู่แล้ว → ไม่ยิง Sniper ซ้ำ ★★★
+    if(orders > 0) return;
+
+    double rsi_buf[], ema_buf[];
+    ArraySetAsSeries(rsi_buf, true); ArraySetAsSeries(ema_buf, true);
+    if(CopyBuffer(hRSI, 0, 0, 1, rsi_buf) < 1 || CopyBuffer(hEMA_H1, 0, 0, 1, ema_buf) < 1) return;
+    double ema = ema_buf[0]; double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    int mtf = MTF_RSI_Confirm(); int bb = BB_Signal();
+    double lot = SafeLotSize(InpStartLot); bool opened = false;
+
+	bool rsi_sell = (rsi_buf[0] >= InpRSI_High);
+	bool rsi_buy  = (rsi_buf[0] <= InpRSI_Low);
+
+    // ★ Signal Limiter
+    bool has_signal = rsi_sell || rsi_buy || (bb != 0);
+    if(!has_signal && signal_was_active) {
+        signal_fire_count = 0;
+        signal_was_active = false;
+    }
+    if(has_signal) signal_was_active = true;
+
+    if(signal_fire_count >= InpMaxSniperPerSignal) {
+        // สัญญาณนี้ยิงครบแล้ว → รอ reset
+    }
+    else {
+        // SELL: bid < EMA + RSI overbought
+        if(bid < ema && rsi_sell) {
+            if(mtf != 99 && mtf > 0) total_blocked_mtf++;
+            else if(OpenTrade(ORDER_TYPE_SELL, lot, "T1103-S")) { opened = true; total_sniper_rsi++; signal_fire_count++; }
+        }
+        // BUY: bid > EMA + RSI oversold
+        else if(bid > ema && rsi_buy) {
+            if(mtf != 99 && mtf < 0) total_blocked_mtf++;
+            else if(OpenTrade(ORDER_TYPE_BUY, lot, "T1103-S")) { opened = true; total_sniper_rsi++; signal_fire_count++; }
+        }
+        // BB Signal
+        else if(bb != 0) {
+            if(bb == 1 && bid > ema) {
+                if(mtf != 99 && mtf < 0) total_blocked_mtf++;
+                else if(OpenTrade(ORDER_TYPE_BUY, lot, "T1103-S")) { opened = true; total_sniper_bb++; signal_fire_count++; }
+            }
+            else if(bb == -1 && bid < ema) {
+                if(mtf != 99 && mtf > 0) total_blocked_mtf++;
+                else if(OpenTrade(ORDER_TYPE_SELL, lot, "T1103-S")) { opened = true; total_sniper_bb++; signal_fire_count++; }
+            }
+        }
+    }
+
+    if(opened) { sniper_locked = true; sniper_cooldown_until = TimeCurrent() + InpSniperCooldownSec; }
+}
+//+------------------------------------------------------------------+
+
